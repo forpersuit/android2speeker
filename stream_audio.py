@@ -709,10 +709,14 @@ def auto_connect_phone():
         print("=======================================================\n")
         return True
     else:
-        print("\n[WARN] Failed to establish WebSocket connection in time.")
-        print("[INFO] Please verify:")
-        print("   1. Mobile screen is unlocked.")
-        print("   2. Allowed web browser network/audio permissions.")
+        print("\n[WARN] Failed to establish WebSocket connection automatically.")
+        print("[INFO] TroubleShooting & Manual Options:")
+        print("   1. Check if the mobile screen is unlocked.")
+        print("   2. If you see the page but hear no sound, please manually tap")
+        print("      the button 'Start Real-Time Audio' on your phone.")
+        print("   3. On MIUI/Xiaomi, 'USB Debugging (Security Settings)'")
+        print("      must be ENABLED to allow automatic screen tap activation.")
+        print("   4. Verify you allowed the browser network and audio permissions.")
         return False
 
 if __name__ == '__main__':
@@ -756,6 +760,16 @@ if __name__ == '__main__':
     else:
         print("[INFO] USB network sharing is not active. Will run via ADB debug loopback (127.0.0.1).")
         subprocess.run(["adb", "shell", "am", "start", "-n", "com.android.settings/.TetherSettings"], capture_output=True)
+
+    # Print manual connection links (extremely useful in standard debugging modes without tap permissions)
+    local_ips = get_all_local_ips()
+    print("\n=======================================================")
+    print("      [Manual Connection Options]")
+    print("      If auto-connection fails, you can manually open")
+    print("      any of the following URLs in your phone browser:")
+    for ip in local_ips:
+        print(f"      -> http://{ip}:8000/")
+    print("=======================================================\n")
 
     # 2. Connection handshake loop
     while True:
