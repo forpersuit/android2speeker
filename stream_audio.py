@@ -608,7 +608,30 @@ def stream_audio_to_socket(ws_socket):
         last_report_time = time.time()
 
         while True:
-            data = stream.read(CHUNK, exception_on_overflow=False)
+            try:
+                avail = stream.get_read_available()
+            except Exception as stream_err:
+                print(f"[Server] Stream error: {stream_err}")
+                break
+
+            if avail >= CHUNK:
+                data = stream.read(CHUNK, exception_on_overflow=False)
+            else:
+                # Wait for equivalent duration of a chunk to avoid high CPU usage
+                sleep_time = CHUNK / SAMPLE_RATE
+                time.sleep(sleep_time)
+                try:
+                    avail = stream.get_read_available()
+                except Exception as stream_err:
+                    print(f"[Server] Stream error: {stream_err}")
+                    break
+                
+                if avail >= CHUNK:
+                    data = stream.read(CHUNK, exception_on_overflow=False)
+                else:
+                    # Generate silent PCM frames
+                    data = b'\x00' * (CHUNK * CHANNELS * 2)
+
             frame = make_websocket_binary_frame(data)
             ws_socket.sendall(frame)
             
