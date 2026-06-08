@@ -585,6 +585,27 @@ def handle_client(client_socket, client_address):
 
 def stream_audio_to_socket(ws_socket):
     stream = None
+    monitor_thread = None
+    active = [True]
+
+    def monitor_connection():
+        try:
+            while active[0]:
+                data = ws_socket.recv(1024)
+                if not data:
+                    print("[Server] Monitor: Client connection closed (EOF)")
+                    break
+        except Exception as e:
+            if active[0]:
+                print(f"[Server] Monitor: Connection closed: {e}")
+        finally:
+            active[0] = False
+            if stream:
+                try:
+                    stream.close()
+                except:
+                    pass
+
     try:
         if GLOBAL_P is None or DEVICE_INDEX is None:
             write_error_log("Soundcard not initialized")
@@ -601,36 +622,26 @@ def stream_audio_to_socket(ws_socket):
                                frames_per_buffer=CHUNK)
 
         print("[Server] Audio capture stream opened. Capturing loopback device...")
-        
+
+        monitor_thread = threading.Thread(target=monitor_connection)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+
         # Transmission statistics
         packet_count = 0
         total_bytes = 0
         last_report_time = time.time()
 
-        while True:
+        while active[0]:
             try:
-                avail = stream.get_read_available()
+                data = stream.read(CHUNK, exception_on_overflow=False)
             except Exception as stream_err:
-                print(f"[Server] Stream error: {stream_err}")
+                if active[0]:
+                    print(f"[Server] Audio stream read exception: {stream_err}")
                 break
 
-            if avail >= CHUNK:
-                data = stream.read(CHUNK, exception_on_overflow=False)
-            else:
-                # Wait for equivalent duration of a chunk to avoid high CPU usage
-                sleep_time = CHUNK / SAMPLE_RATE
-                time.sleep(sleep_time)
-                try:
-                    avail = stream.get_read_available()
-                except Exception as stream_err:
-                    print(f"[Server] Stream error: {stream_err}")
-                    break
-                
-                if avail >= CHUNK:
-                    data = stream.read(CHUNK, exception_on_overflow=False)
-                else:
-                    # Generate silent PCM frames
-                    data = b'\x00' * (CHUNK * CHANNELS * 2)
+            if not data:
+                break
 
             frame = make_websocket_binary_frame(data)
             ws_socket.sendall(frame)
@@ -648,11 +659,14 @@ def stream_audio_to_socket(ws_socket):
                 last_report_time = current_time
 
     except socket.error as e:
-        print(f"[Server] Client disconnected: {e}")
+        if active[0]:
+            print(f"[Server] Client disconnected: {e}")
     except Exception as e:
-        print(f"[Server] Audio stream transmission error: {e}")
-        write_error_log(f"Audio stream loop crash: {e}")
+        if active[0]:
+            print(f"[Server] Audio stream transmission error: {e}")
+            write_error_log(f"Audio stream loop crash: {e}")
     finally:
+        active[0] = False
         if stream:
             try:
                 if stream.is_active():
