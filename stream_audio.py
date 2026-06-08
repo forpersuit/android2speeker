@@ -8,13 +8,11 @@ import re
 import sys
 import ctypes
 import json
-import math
-import struct
 import xml.etree.ElementTree as ET
 import pyaudiowpatch as pyaudio
 
 PORT = 8000
-CHUNK = 1024 # Increased chunk size to reduce packet frequency and prevent network jitter
+CHUNK = 512 # Reduced chunk size to 512 to cut input capture latency in half (~11.6ms)
 FORMAT = pyaudio.paInt16
 CHANNELS = 2
 RATE = 44100
@@ -55,24 +53,6 @@ def make_websocket_binary_frame(data):
         frame.extend(length.to_bytes(8, 'big'))
     frame.extend(data)
     return bytes(frame)
-
-# Generates a smooth 440Hz test sine tone with fade-in and fade-out to verify loopback path connection
-def generate_test_tone(duration=0.6, freq=440, rate=44100):
-    samples = int(rate * duration)
-    tone_data = bytearray()
-    for i in range(samples):
-        amplitude = 8000
-        # 50ms fade-in
-        if i < rate * 0.05:
-            amplitude = int(8000 * (i / (rate * 0.05)))
-        # 50ms fade-out
-        elif i > samples - rate * 0.05:
-            amplitude = int(8000 * ((samples - i) / (rate * 0.05)))
-            
-        val = int(amplitude * math.sin(2 * math.pi * freq * i / rate))
-        tone_data.extend(struct.pack("<h", val))  # Left channel
-        tone_data.extend(struct.pack("<h", val))  # Right channel
-    return bytes(tone_data)
 
 HTML_PAGE = """<!DOCTYPE html>
 <html>
@@ -240,9 +220,9 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="control-group">
             <div class="control-label">
                 <span>Buffer Delay</span>
-                <span id="delay-val">60ms</span>
+                <span id="delay-val">30ms</span>
             </div>
-            <input type="range" min="15" max="250" value="60" class="slider" id="delay-slider" oninput="updateDelay(this.value)">
+            <input type="range" min="10" max="200" value="30" class="slider" id="delay-slider" oninput="updateDelay(this.value)">
             <div style="font-size: 11px; color: #8c8caf; margin-top: 10px; display: flex; justify-content: space-between;">
                 <span>Transmission Latency:</span>
                 <span id="realtime-latency" style="color: #00ffcc; font-weight: bold;">0ms</span>
@@ -266,7 +246,7 @@ HTML_PAGE = """<!DOCTYPE html>
         let audioCtx = null;
         let ws = null;
         let nextPlayTime = 0;
-        let bufferDelay = 0.06; // Raised default delay buffer to 60ms to guard against WiFi jitter
+        let bufferDelay = 0.03; // Reduced default buffer delay to 30ms for lower latency
         let shouldReconnect = true;
         let reconnectTimer = null;
 
@@ -275,11 +255,31 @@ HTML_PAGE = """<!DOCTYPE html>
             bufferDelay = val / 1000.0;
         }
 
+        // Plays a gentle client-side chime once audio output is successfully unlocked
+        function playBeep() {
+            try {
+                if (!audioCtx) return;
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = "sine";
+                osc.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4); // 0.4s fade-out
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.4);
+            } catch (e) {
+                console.error("Beep play error:", e);
+            }
+        }
+
         const unlockAudio = () => {
             if (audioCtx) {
                 if (audioCtx.state === 'suspended') {
                     audioCtx.resume().then(() => {
                         nextPlayTime = 0; 
+                        playBeep();
                     });
                 } else {
                     nextPlayTime = 0;
@@ -337,7 +337,10 @@ HTML_PAGE = """<!DOCTYPE html>
                     if (audioCtx && audioCtx.state === 'suspended') {
                         audioCtx.resume().then(() => {
                             nextPlayTime = 0;
+                            playBeep();
                         });
+                    } else {
+                        playBeep();
                     }
                 };
 
@@ -407,10 +410,8 @@ HTML_PAGE = """<!DOCTYPE html>
             const currentLatency = (nextPlayTime < currentTime) ? bufferDelay : (nextPlayTime - currentTime);
             document.getElementById('realtime-latency').textContent = Math.round(currentLatency * 1000) + 'ms';
             
-            // Jitter mitigation: If latency climbs too high due to network packets arriving late/batched,
-            // we smoothly align nextPlayTime to currentTime + bufferDelay instead of dropping the packets.
-            // This prevents desync cracking noises and resolves pops.
-            if (currentLatency > bufferDelay + 0.10) {
+            // Jitter mitigation: If latency climbs too high due to packets, smoothly align nextPlayTime
+            if (currentLatency > bufferDelay + 0.05) {
                 nextPlayTime = currentTime + bufferDelay;
             }
             
@@ -591,19 +592,10 @@ def stream_audio_to_socket(ws_socket):
             write_error_log("Soundcard not initialized")
             return
 
-        # 1. Warm connection up by sending a smooth 440Hz test sine tone for 0.6 seconds.
-        # This confirms audio transmission path is working and primes phone web buffers.
-        test_tone = generate_test_tone(duration=0.6, freq=440, rate=SAMPLE_RATE)
-        chunk_bytes = CHUNK * CHANNELS * 2  # 1024 * 2 * 2 = 4096 bytes per chunk
-        for offset in range(0, len(test_tone), chunk_bytes):
-            chunk_data = test_tone[offset:offset+chunk_bytes]
-            if len(chunk_data) < chunk_bytes:
-                chunk_data = chunk_data + b'\x00' * (chunk_bytes - len(chunk_data))
-            frame = make_websocket_binary_frame(chunk_data)
-            ws_socket.sendall(frame)
-            time.sleep(CHUNK / SAMPLE_RATE)
+        # Configure TCP socket options for real-time delivery
+        ws_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        ws_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096) # limit queue buffer
 
-        # 2. Then proceed to capture loopback device audio stream
         stream = GLOBAL_P.open(format=FORMAT,
                                channels=CHANNELS,
                                rate=SAMPLE_RATE,
