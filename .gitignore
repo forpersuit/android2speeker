@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Packaging
+build/
+dist/
+*.spec
+
+# IDE / System
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Project logs
+*.log
+error_log.txt

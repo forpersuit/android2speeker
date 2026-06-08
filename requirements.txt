@@ -1,0 +1,2 @@
+pyaudiowpatch==0.2.16.dev1
+pyinstaller>=6.0.0
