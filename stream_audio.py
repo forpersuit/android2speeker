@@ -8,11 +8,13 @@ import re
 import sys
 import ctypes
 import json
+import math
+import struct
 import xml.etree.ElementTree as ET
 import pyaudiowpatch as pyaudio
 
 PORT = 8000
-CHUNK = 512
+CHUNK = 1024 # Increased chunk size to reduce packet frequency and prevent network jitter
 FORMAT = pyaudio.paInt16
 CHANNELS = 2
 RATE = 44100
@@ -53,6 +55,24 @@ def make_websocket_binary_frame(data):
         frame.extend(length.to_bytes(8, 'big'))
     frame.extend(data)
     return bytes(frame)
+
+# Generates a smooth 440Hz test sine tone with fade-in and fade-out to verify loopback path connection
+def generate_test_tone(duration=0.6, freq=440, rate=44100):
+    samples = int(rate * duration)
+    tone_data = bytearray()
+    for i in range(samples):
+        amplitude = 8000
+        # 50ms fade-in
+        if i < rate * 0.05:
+            amplitude = int(8000 * (i / (rate * 0.05)))
+        # 50ms fade-out
+        elif i > samples - rate * 0.05:
+            amplitude = int(8000 * ((samples - i) / (rate * 0.05)))
+            
+        val = int(amplitude * math.sin(2 * math.pi * freq * i / rate))
+        tone_data.extend(struct.pack("<h", val))  # Left channel
+        tone_data.extend(struct.pack("<h", val))  # Right channel
+    return bytes(tone_data)
 
 HTML_PAGE = """<!DOCTYPE html>
 <html>
@@ -220,9 +240,9 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="control-group">
             <div class="control-label">
                 <span>Buffer Delay</span>
-                <span id="delay-val">40ms</span>
+                <span id="delay-val">60ms</span>
             </div>
-            <input type="range" min="15" max="200" value="40" class="slider" id="delay-slider" oninput="updateDelay(this.value)">
+            <input type="range" min="15" max="250" value="60" class="slider" id="delay-slider" oninput="updateDelay(this.value)">
             <div style="font-size: 11px; color: #8c8caf; margin-top: 10px; display: flex; justify-content: space-between;">
                 <span>Transmission Latency:</span>
                 <span id="realtime-latency" style="color: #00ffcc; font-weight: bold;">0ms</span>
@@ -240,13 +260,13 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
     <script>
-        const computerIps = {{COMPUTER_IPS}}; // Back-end dynamically injected physical IP list
+        const computerIps = {{COMPUTER_IPS}};
         let wsUrlIndex = 0;
         
         let audioCtx = null;
         let ws = null;
         let nextPlayTime = 0;
-        let bufferDelay = 0.04;
+        let bufferDelay = 0.06; // Raised default delay buffer to 60ms to guard against WiFi jitter
         let shouldReconnect = true;
         let reconnectTimer = null;
 
@@ -259,7 +279,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (audioCtx) {
                 if (audioCtx.state === 'suspended') {
                     audioCtx.resume().then(() => {
-                        nextPlayTime = 0; // Force timeline synchronization on unlock
+                        nextPlayTime = 0; 
                     });
                 } else {
                     nextPlayTime = 0;
@@ -298,7 +318,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
                 initAudioCtx();
                 
-                // Poll and try available IPs
                 const targetIp = computerIps[wsUrlIndex];
                 const wsUrl = "ws://" + targetIp + ":8000/ws";
                 
@@ -329,7 +348,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 ws.onclose = () => {
                     cleanup();
                     if (shouldReconnect) {
-                        // Quick switch to next IP route for self-healing connection
                         wsUrlIndex = (wsUrlIndex + 1) % computerIps.length;
                         dot.className = 'status-dot';
                         statusText.textContent = 'Disconnected, trying backup route...';
@@ -374,10 +392,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function playAudioChunk(arrayBuffer) {
             if (!audioCtx) return;
-            
-            // Drop incoming audio frames if the audio context is suspended.
-            // This prevents the buffer timeline (nextPlayTime) from drifting/accumulating
-            // while waiting for UAC/ADB screen unlock activation.
             if (audioCtx.state === 'suspended') {
                 return;
             }
@@ -393,8 +407,11 @@ HTML_PAGE = """<!DOCTYPE html>
             const currentLatency = (nextPlayTime < currentTime) ? bufferDelay : (nextPlayTime - currentTime);
             document.getElementById('realtime-latency').textContent = Math.round(currentLatency * 1000) + 'ms';
             
-            if (currentLatency > bufferDelay + 0.06) {
-                return;
+            // Jitter mitigation: If latency climbs too high due to network packets arriving late/batched,
+            // we smoothly align nextPlayTime to currentTime + bufferDelay instead of dropping the packets.
+            // This prevents desync cracking noises and resolves pops.
+            if (currentLatency > bufferDelay + 0.10) {
+                nextPlayTime = currentTime + bufferDelay;
             }
             
             const audioBuffer = audioCtx.createBuffer(channels, numSamples, sampleRate);
@@ -574,6 +591,19 @@ def stream_audio_to_socket(ws_socket):
             write_error_log("Soundcard not initialized")
             return
 
+        # 1. Warm connection up by sending a smooth 440Hz test sine tone for 0.6 seconds.
+        # This confirms audio transmission path is working and primes phone web buffers.
+        test_tone = generate_test_tone(duration=0.6, freq=440, rate=SAMPLE_RATE)
+        chunk_bytes = CHUNK * CHANNELS * 2  # 1024 * 2 * 2 = 4096 bytes per chunk
+        for offset in range(0, len(test_tone), chunk_bytes):
+            chunk_data = test_tone[offset:offset+chunk_bytes]
+            if len(chunk_data) < chunk_bytes:
+                chunk_data = chunk_data + b'\x00' * (chunk_bytes - len(chunk_data))
+            frame = make_websocket_binary_frame(chunk_data)
+            ws_socket.sendall(frame)
+            time.sleep(CHUNK / SAMPLE_RATE)
+
+        # 2. Then proceed to capture loopback device audio stream
         stream = GLOBAL_P.open(format=FORMAT,
                                channels=CHANNELS,
                                rate=SAMPLE_RATE,
