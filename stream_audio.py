@@ -58,7 +58,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>零延迟音频接收器</title>
+    <title>Zero-Latency Audio Receiver</title>
     <style>
         body {
             background: radial-gradient(circle at center, #141529, #070814);
@@ -211,25 +211,25 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="card">
-        <h1>零延迟无线扬声器</h1>
+        <h1>Wireless Audio Receiver</h1>
         <p>
             <span class="status-dot" id="dot"></span>
-            <span id="status-text">正在初始化...</span>
+            <span id="status-text">Initializing...</span>
         </p>
         
         <div class="control-group">
             <div class="control-label">
-                <span>防抖缓冲延迟</span>
+                <span>Buffer Delay</span>
                 <span id="delay-val">40ms</span>
             </div>
             <input type="range" min="15" max="200" value="40" class="slider" id="delay-slider" oninput="updateDelay(this.value)">
             <div style="font-size: 11px; color: #8c8caf; margin-top: 10px; display: flex; justify-content: space-between;">
-                <span>传输链路延迟:</span>
+                <span>Transmission Latency:</span>
                 <span id="realtime-latency" style="color: #00ffcc; font-weight: bold;">0ms</span>
             </div>
         </div>
 
-        <button id="btn" class="play-btn" onclick="togglePlay()">点此开启实时声音</button>
+        <button id="btn" class="play-btn" onclick="togglePlay()">Start Real-Time Audio</button>
         
         <div class="visualizer" id="vis">
             <div class="bar"></div>
@@ -240,7 +240,7 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
     <script>
-        const computerIps = {{COMPUTER_IPS}}; // 后端动态注入的物理 IP 列表
+        const computerIps = {{COMPUTER_IPS}}; // Back-end dynamically injected physical IP list
         let wsUrlIndex = 0;
         
         let audioCtx = null;
@@ -292,20 +292,20 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
                 initAudioCtx();
                 
-                // 轮询尝试可用 IP
+                // Poll and try available IPs
                 const targetIp = computerIps[wsUrlIndex];
                 const wsUrl = "ws://" + targetIp + ":8000/ws";
                 
                 dot.className = 'status-dot connecting';
-                statusText.textContent = '连接中 (' + targetIp + ')...';
+                statusText.textContent = 'Connecting (' + targetIp + ')...';
                 
                 ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';
 
                 ws.onopen = () => {
                     dot.className = 'status-dot connected';
-                    statusText.textContent = '已连接：实时零延时推送中';
-                    btn.textContent = '暂停播放';
+                    statusText.textContent = 'Connected: Real-Time Stream Active';
+                    btn.textContent = 'Pause Audio';
                     btn.classList.add('playing');
                     bars.forEach(b => b.style.animationPlayState = 'running');
                     nextPlayTime = 0;
@@ -321,10 +321,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 ws.onclose = () => {
                     cleanup();
                     if (shouldReconnect) {
-                        // 连不上则快速切换到下一个 IP 路由进行自愈重连
+                        // Quick switch to next IP route for self-healing connection
                         wsUrlIndex = (wsUrlIndex + 1) % computerIps.length;
                         dot.className = 'status-dot';
-                        statusText.textContent = '连接已断开，尝试备用链路...';
+                        statusText.textContent = 'Disconnected, trying backup route...';
                         if (!reconnectTimer) {
                             reconnectTimer = setTimeout(() => {
                                 reconnectTimer = null;
@@ -358,8 +358,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 ws = null;
             }
             dot.className = 'status-dot';
-            statusText.textContent = '已断开';
-            btn.textContent = '点此开启实时声音';
+            statusText.textContent = 'Disconnected';
+            btn.textContent = 'Start Real-Time Audio';
             btn.classList.remove('playing');
             bars.forEach(b => b.style.animationPlayState = 'paused');
         }
@@ -430,7 +430,7 @@ def get_loopback_device_info(p):
             break
             
     if device_index is None:
-        raise Exception("未找到 WASAPI 环回声卡设备，请确认系统音频输出正常")
+        raise Exception("WASAPI Loopback soundcard device not found. Please verify PC audio output is enabled.")
         
     dev_info = p.get_device_info_by_index(device_index)
     rate = int(dev_info.get("defaultSampleRate", 44100))
@@ -440,7 +440,7 @@ def get_loopback_device_info(p):
         
     return device_index, rate, channels
 
-# 全局单例初始化
+# Global initialization
 GLOBAL_P = None
 DEVICE_INDEX = None
 SAMPLE_RATE = 44100
@@ -448,7 +448,6 @@ CHANNELS = 2
 
 def get_all_local_ips():
     ips = ["127.0.0.1"]
-    # 优先获取当前电脑所有的物理网卡 IP
     try:
         hostname = socket.gethostname()
         for ip in socket.gethostbyname_ex(hostname)[2]:
@@ -458,7 +457,6 @@ def get_all_local_ips():
     except Exception:
         pass
         
-    # 通过 ipconfig 补充
     try:
         out = subprocess.check_output("ipconfig", shell=True, text=True, encoding="gbk", errors="ignore")
         found = re.findall(r"IPv4 地址[\.\s]*: (\d+\.\d+\.\d+\.\d+)", out)
@@ -532,11 +530,9 @@ def handle_client(client_socket, client_address):
             else:
                 client_socket.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
         else:
-            # 动态获取本机 IP 列表注入 HTML 页面
             local_ips = get_all_local_ips()
             dynamic_html = HTML_PAGE.replace("{{SAMPLE_RATE}}", str(SAMPLE_RATE)).replace("{{CHANNELS}}", str(CHANNELS)).replace("{{COMPUTER_IPS}}", json.dumps(local_ips))
             
-            # 使用 No-Cache 强制清空浏览器端网页缓存，保证最新 JS 载入
             response = (
                 "HTTP/1.1 200 OK\r\n"
                 "Content-Type: text/html; charset=utf-8\r\n"
@@ -661,7 +657,6 @@ def check_adb_and_setup_reverse():
                 
         if device_status == "device":
             print(f"[OK] Phone connected successfully (ID: {device_id}).")
-            # 建立物理 adb 端口倒灌映射，将手机端的 8000 转发至电脑的 8000
             subprocess.run(["adb", "reverse", "tcp:8000", "tcp:8000"], capture_output=True)
             return True, device_id
             
@@ -688,11 +683,9 @@ def auto_connect_phone():
     if not success or not device_id:
         return False
         
-    # 默认通过最稳定、免疫防火墙的 ADB 本地回环进行拉起
     url = f"http://127.0.0.1:8000/?t={int(time.time())}"
     print(f"[Phone] [Step 2/2] Requesting phone browser to load: {url}")
     
-    # 自动拉起
     subprocess.run(["adb", "shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], capture_output=True)
     
     print("[WAIT] Waiting for WebSocket connection and dynamic clicking validation...")
@@ -724,13 +717,13 @@ def auto_connect_phone():
 
 if __name__ == '__main__':
     print("=======================================================")
-    print("    [USB Android Speaker] 一键物理链路音频传输工具")
+    print("    [USB Android Speaker] One-click Physical Link Audio Transmitter")
     print("=======================================================")
     
-    # 0. 防火墙自愈检测
+    # 0. Firewall self-healing
     fix_firewall_rules()
     
-    # 0.6. 全局声卡初始化
+    # 0.6. Audio Initialization
     try:
         GLOBAL_P = pyaudio.PyAudio()
         DEVICE_INDEX, SAMPLE_RATE, CHANNELS = get_loopback_device_info(GLOBAL_P)
@@ -744,7 +737,7 @@ if __name__ == '__main__':
         input()
         sys.exit(1)
 
-    # 1. 启动音频服务器
+    # 1. Start Audio Server
     server_thread = threading.Thread(target=run_server)
     server_thread.daemon = True
     server_thread.start()
@@ -757,16 +750,14 @@ if __name__ == '__main__':
         input()
         sys.exit(1)
         
-    # 检测 USB 网络共享 IP (只做温和的背景诊断提示，不再强求或阻塞，因为 127.0.0.1 也能 100% 成功工作)
     usb_ip = get_usb_tethering_ip()
     if usb_ip:
         print(f"[INFO] USB network tethering is active (IP: {usb_ip}).")
     else:
         print("[INFO] USB network sharing is not active. Will run via ADB debug loopback (127.0.0.1).")
-        # 顺便静默拉起设置菜单方便用户如果想开启
         subprocess.run(["adb", "shell", "am", "start", "-n", "com.android.settings/.TetherSettings"], capture_output=True)
 
-    # 2. 循环建立物理投音握手
+    # 2. Connection handshake loop
     while True:
         success = auto_connect_phone()
         if success:
