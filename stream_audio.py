@@ -256,8 +256,14 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         const unlockAudio = () => {
-            if (audioCtx && audioCtx.state === 'suspended') {
-                audioCtx.resume();
+            if (audioCtx) {
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume().then(() => {
+                        nextPlayTime = 0; // Force timeline synchronization on unlock
+                    });
+                } else {
+                    nextPlayTime = 0;
+                }
             }
         };
         document.body.addEventListener('click', unlockAudio);
@@ -310,7 +316,9 @@ HTML_PAGE = """<!DOCTYPE html>
                     bars.forEach(b => b.style.animationPlayState = 'running');
                     nextPlayTime = 0;
                     if (audioCtx && audioCtx.state === 'suspended') {
-                        audioCtx.resume();
+                        audioCtx.resume().then(() => {
+                            nextPlayTime = 0;
+                        });
                     }
                 };
 
@@ -366,6 +374,13 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function playAudioChunk(arrayBuffer) {
             if (!audioCtx) return;
+            
+            // Drop incoming audio frames if the audio context is suspended.
+            // This prevents the buffer timeline (nextPlayTime) from drifting/accumulating
+            // while waiting for UAC/ADB screen unlock activation.
+            if (audioCtx.state === 'suspended') {
+                return;
+            }
             
             const sampleRate = {{SAMPLE_RATE}};
             const channels = {{CHANNELS}};
