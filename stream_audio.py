@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 import pyaudiowpatch as pyaudio
 
 PORT = 8000
-CHUNK = 512 # Reduced chunk size to 512 to cut input capture latency in half (~11.6ms)
+CHUNK = 512
 FORMAT = pyaudio.paInt16
 CHANNELS = 2
 RATE = 44100
@@ -246,7 +246,7 @@ HTML_PAGE = """<!DOCTYPE html>
         let audioCtx = null;
         let ws = null;
         let nextPlayTime = 0;
-        let bufferDelay = 0.03; // Reduced default buffer delay to 30ms for lower latency
+        let bufferDelay = 0.03; 
         let shouldReconnect = true;
         let reconnectTimer = null;
 
@@ -255,16 +255,15 @@ HTML_PAGE = """<!DOCTYPE html>
             bufferDelay = val / 1000.0;
         }
 
-        // Plays a gentle client-side chime once audio output is successfully unlocked
         function playBeep() {
             try {
                 if (!audioCtx) return;
                 const osc = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
                 osc.type = "sine";
-                osc.frequency.setValueAtTime(440, audioCtx.currentTime); // A4
+                osc.frequency.setValueAtTime(440, audioCtx.currentTime); 
                 gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4); // 0.4s fade-out
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4); 
                 osc.connect(gain);
                 gain.connect(audioCtx.destination);
                 osc.start();
@@ -410,7 +409,6 @@ HTML_PAGE = """<!DOCTYPE html>
             const currentLatency = (nextPlayTime < currentTime) ? bufferDelay : (nextPlayTime - currentTime);
             document.getElementById('realtime-latency').textContent = Math.round(currentLatency * 1000) + 'ms';
             
-            // Jitter mitigation: If latency climbs too high due to packets, smoothly align nextPlayTime
             if (currentLatency > bufferDelay + 0.05) {
                 nextPlayTime = currentTime + bufferDelay;
             }
@@ -592,9 +590,8 @@ def stream_audio_to_socket(ws_socket):
             write_error_log("Soundcard not initialized")
             return
 
-        # Configure TCP socket options for real-time delivery
         ws_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        ws_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096) # limit queue buffer
+        ws_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
 
         stream = GLOBAL_P.open(format=FORMAT,
                                channels=CHANNELS,
@@ -603,13 +600,34 @@ def stream_audio_to_socket(ws_socket):
                                input_device_index=DEVICE_INDEX,
                                frames_per_buffer=CHUNK)
 
+        print("[Server] Audio capture stream opened. Capturing loopback device...")
+        
+        # Transmission statistics
+        packet_count = 0
+        total_bytes = 0
+        last_report_time = time.time()
+
         while True:
             data = stream.read(CHUNK, exception_on_overflow=False)
             frame = make_websocket_binary_frame(data)
             ws_socket.sendall(frame)
+            
+            packet_count += 1
+            total_bytes += len(frame)
+            
+            current_time = time.time()
+            if current_time - last_report_time >= 2.0:
+                pps = packet_count / (current_time - last_report_time)
+                kbps = (total_bytes * 8 / 1000) / (current_time - last_report_time)
+                print(f"[Server] Active: sending {pps:.1f} packets/sec | {kbps:.1f} kbps")
+                packet_count = 0
+                total_bytes = 0
+                last_report_time = current_time
+
     except socket.error as e:
-        pass
+        print(f"[Server] Client disconnected: {e}")
     except Exception as e:
+        print(f"[Server] Audio stream transmission error: {e}")
         write_error_log(f"Audio stream loop crash: {e}")
     finally:
         if stream:
@@ -617,6 +635,7 @@ def stream_audio_to_socket(ws_socket):
                 if stream.is_active():
                     stream.stop_stream()
                 stream.close()
+                print("[Server] Audio capture stream closed.")
             except:
                 pass
 
